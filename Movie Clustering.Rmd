@@ -1,0 +1,318 @@
+---
+title: "Movie Clustering"
+author: "Yuhao Wang & Meiyuan Li"
+output: slidy_presentation
+---
+
+```{r,echo=FALSE}
+options(warn = 0)
+```
+##Why text clustering?
+###Business Applications
+
+<strong>Media monitoring and analysis (social and traditional)</strong>
+
+Detection of duplicate content, identification of plagiarism, related news.
+
+<strong>Information retrieval and recommendation systems</strong>
+
+Grouping of search results, aid to navigation, suggestion of related information, recommendation of contents and products.
+
+<strong>Feedback analysis and opinion mining</strong>
+
+Detection of not predefined and unforeseen subjects in surveys and claims (which enable a more proactive management and a more effective response); aggregation and description of verbatims using “their own words”; analysis of the voice of the customer, employee, citizen, etc.; idea management.
+
+<strong>Document organization</strong>
+
+Structuring of collections of documents and records according to the implicit subjects that naturally emerge from the contents themselves and not from external taxonomies.
+
+### Movie Recommendation
+<ul>
+<li>Cluster the movies into different sets for first time user to choose</li>
+<li>Recommend movies to user from the same cluster</li>
+<li>Discover the simliar users and recommend other things</li>
+</ur>
+
+##Libraries used
+```{r}
+suppressMessages(library(tm))
+suppressMessages(library(textmineR))
+suppressMessages(library(text2vec))
+suppressMessages(library(lsa))
+suppressMessages(library(stringr))
+suppressMessages(library(gdmp))
+suppressMessages(library(ggplot2))
+suppressMessages(library(plotly))
+suppressMessages(library(networkD3))
+suppressMessages(library(topicmodels))
+suppressMessages(library(h2o))
+
+```
+
+
+## Part 1: Load Data
+This list contains the best 100 movies on the imdb.(It is created by one user, but it got a lot of recoginition.)
+
+```{r}
+titles <- readLines("/Users/yuhaowang/Downloads/data/titles.txt")
+titles <- titles[1:100]
+```
+
+This text contains the synopses of these 100 movies from imdb and wikipedia.
+The result will be a list of length 100.
+```{r, warning=FALSE, message=FALSE}
+plots_wiki = readLines("/Users/yuhaowang/Downloads/data/plots_wiki.txt")
+plots_wiki = str_replace_all(plots_wiki,"BREAKS HERE Plot","BREAKS HERE")
+plots_wiki = str_replace_all(plots_wiki,"\\[","")
+plots_wiki= str_replace_all(plots_wiki,"\\]","")
+plots_wiki= str_replace_all(plots_wiki,"edit      edit  edit","")
+plots_wiki= str_replace_all(plots_wiki," BREAKS HERE .*","BREAKS HERE")
+whole = paste(plots_wiki, collapse = "")
+final = strsplit(whole,"BREAKS HERE", perl = TRUE)
+plots_wiki = unlist(final)
+```
+```{r, warning=FALSE, message=FALSE}
+plots_imdb = readLines("/Users/yuhaowang/Downloads/data/plots_imdb.txt")
+plots_imdb = str_replace_all(plots_imdb,"BREAKS HERE Plot","BREAKS HERE")
+plots_imdb = str_replace_all(plots_imdb,"\\[","")
+plots_imdb= str_replace_all(plots_imdb,"\\]","")
+plots_imdb= str_replace_all(plots_imdb,"edit      edit  edit","")
+plots_imdb= str_replace_all(plots_imdb," BREAKS HERE .*","BREAKS HERE")
+whole = paste(plots_imdb, collapse = "")
+final = strsplit(whole,"BREAKS HERE", perl = TRUE)
+plots_imdb = unlist(final)
+
+```
+```{r}
+plots = c()
+for(i in 1: (length(plots_wiki))){
+    item = paste(plots_wiki[i], plots_imdb[i], sep=" ")
+    plots = c(plots, item)
+}
+
+print(titles[1:5])
+print(plots[1])
+```
+
+
+## Part 2: Tokenizing and Stemming
+Now we tokenize and stem each plot.
+```{r}
+plots1 <- Corpus(VectorSource(plots))
+len_plots <- length(plots1)
+# ignore extremely rare words i.e. terms that appear in less then 20% of the documents
+minTermFreq <- len_plots * 0.2
+# ignore overly common words i.e. terms that appear in more than 80% of the documents
+maxTermFreq <- len_plots * 0.8
+
+dtm = DocumentTermMatrix(plots1,
+                         control = list(
+                            stopwords=c(stopwords("en"),"george","robert","john"), 
+                                        wordLengths=c(4, 15),
+                                        removePunctuation = TRUE,
+                                        removeNumbers = TRUE,
+                                        stemming = TRUE,
+                                        bounds = list(global = c(minTermFreq, maxTermFreq))
+                                       ))
+
+dtm = as.matrix(dtm)
+print(dim(dtm))
+print(dtm[1:5, 1:10])
+```
+## Part 3: TF-IDF
+Transforme the corpus into DTM 
+
+```{r}
+tfidf = TfIdf$new(smooth_idf = TRUE, norm ="l2")
+# fit model to train data and transform train data with fitted model
+tfidf$fit(dtm)
+dtm_tfidf = fit_transform(dtm, tfidf)
+```
+Calculate the cosine distance between each document (for later use).
+```{r}
+#Calculate Document Similarity
+cos_matrix = cosine(as.matrix(dtm_tfidf))
+```
+## Part 4: K-means clustering
+
+```{r}
+fit = kmeans(dtm_tfidf, 5)
+fit$cluster
+```
+### 4.1. Analyze K-means Result
+```{r}
+rank = c(1:100)
+frame = data.frame(rank, titles, fit$cluster)
+head(frame)
+```
+```{r}
+colnames(frame)[2] = "title"
+colnames(frame)[3] = "cluster"
+head(frame)
+```
+```{r}
+table(frame$cluster)
+```
+
+```{r}
+aggregate(frame[, 1], list(frame$cluster), mean)
+
+```
+
+
+```{r}
+sort_cust = function(x) sort.int(x, decreasing = TRUE, index.return = TRUE)
+order_centroids = apply(fit$centers, 1, sort_cust)
+#order_centroids[[2]]
+```
+
+```{r}
+tf_selected_words = colnames(dtm_tfidf)
+#tf_selected_words
+```
+
+
+```{r}
+print("<Document clustering result by K-means>")
+Cluster_keywords_summary = vector(mode="list", length = 5)
+myHashMap <- new.env(hash=TRUE)
+for(i in 1:5){
+    cat(sprintf("Cluster %s words:\n", as.String(i)))
+    myHashMap[[as.String(i)]] = c()
+    for(ind in 1:6) {
+      myHashMap[[as.String(i)]] = c(myHashMap[[as.String(i)]], tf_selected_words[order_centroids[[i]]$ix[ind]])
+    }
+    print(myHashMap[[as.String(i)]])
+    cat("\n")
+    cluster_movies = frame['title'][frame['cluster'] == i]
+    cat(sprintf("Cluster %s ", as.String(i)))
+    cat(sprintf(" titles ( %s movies): ", as.String(length(cluster_movies))))
+    print(cluster_movies)
+    cat("\n")
+}
+
+```
+### 4.2. Plot K-means Result
+```{r}
+pca <- prcomp(t(dtm_tfidf))
+pc.comp <- pca$rotation[,1:2]
+
+pc.comp1 <- pc.comp[,1] # principal component 1 scores (negated for convenience)
+pc.comp2 <- pc.comp[,2] # principal component 2 scores (negated for convenience)
+f = data.frame(label=fit$cluster, title = titles, x = pc.comp1, y = pc.comp2)
+for(i in 1:5) {
+  cat("cluster ")
+  cat(sprintf("%s :", i))
+  cat(myHashMap[[as.String(i)]])
+  cat("\n")
+}
+p <- ggplot(f, aes(x = x, 
+                   y = y, 
+                   color = factor(label))) +
+                   geom_point(aes(text=title),alpha = 0.5)
+
+ggplotly(p)
+
+```
+
+### 4.3. Hierarchical document clustering
+
+```{r}
+hc = hclust(as.dist(dtm_tfidf), method="ward.D2")
+hc$labels = titles
+dendroNetwork(hc, height = 1200)
+
+```
+
+## Part 5: Topic Modeling - Latent Dirichlet Allocation
+
+```{r}
+#Set parameters for Gibbs sampling
+burnin = 4000
+iter = 500
+thin = 500
+seed = list(2003,5,63,100001,765)
+nstart = 5
+best = TRUE
+#Number of topics
+k = 5
+res <-LDA(dtm, k, method="Gibbs", control = list(nstart = nstart, seed = seed, best = best, burnin = burnin, iter = iter, thin = thin))
+
+#Show topics
+res.topics = as.matrix(topics(res))
+
+#Show top terms
+res.terms = as.matrix(terms(res,6))
+print(res.terms)
+
+```
+```{r}
+cat("<Document clustering result by LDA>\n")
+topic_doc_dict <- new.env(hash=TRUE)
+
+for(i in 1:100) {
+  if (res.topics[i] == 1) {
+    topic_doc_dict[["1"]] = c(topic_doc_dict[["1"]], titles[i])
+  } else if(res.topics[i] == 2) {
+    topic_doc_dict[["2"]] = c(topic_doc_dict[["2"]], titles[i])
+  } else if(res.topics[i] == 3) {
+    topic_doc_dict[["3"]] = c(topic_doc_dict[["3"]], titles[i])
+  } else if(res.topics[i] == 4) {
+    topic_doc_dict[["4"]] = c(topic_doc_dict[["4"]], titles[i])
+  } else {
+    topic_doc_dict[["5"]] = c(topic_doc_dict[["5"]], titles[i])
+  }
+}
+
+for(i in 1:5) {
+    cat(sprintf("Cluster %s words: \n", as.String(i)))
+    print(res.terms[, i])
+    cat(sprintf("Cluster %s titles (%s movies): ", as.String(i), as.String(length(topic_doc_dict[[as.String(i)]]))))
+    print(topic_doc_dict[[as.String(i)]])
+}
+
+```
+## Part 6: Deep Learning: Stacked Auto-Encoder By H2O
+
+Using h2o.deeplearning() for unsupervised learning, are you serious? How does auto-encoder work? It still does supervised learning, but it copies the input layer to be the output layer. In other words, it tries to learn the inputs. That might sound a bit no sense, but what is happening is that the hidden layers are being forced to summarize the data, to compress it.
+
+```{r}
+## Data Preparation
+df <- data.frame(as.matrix(dtm_tfidf), row.names = titles)
+#write.csv(df, file = "df.csv")
+```
+```{r}
+localH2O <- h2o.init(ip = 'localhost', port = 54321, max_mem_size = '4g',nthreads=-1,startH2O = TRUE)
+```
+
+```{r}
+df <- h2o.importFile("/Users/yuhaowang/Downloads/df.csv")
+m1 <- h2o.deeplearning(2:544, training_frame = df, hidden = c(128,64,11,64,128), autoencoder  = T, activation = "Tanh", epochs = 400) 
+f1 <- h2o.deepfeatures(m1, df, layer = 2)
+m2 <- h2o.deeplearning(1:11, training_frame = f1, hidden = c(2), autoencoder  = T, activation = "Tanh", epochs = 400)
+f2 <- h2o.deepfeatures(m2, f1, layer = 1)
+
+```
+
+
+```{r}
+#d <- as.matrix(f2) 
+m <- h2o.kmeans(f2, k = 5, standardize = FALSE, init = "PlusPlus") 
+p1 <- h2o.predict(m, f2) 
+tapply(as.vector(df[, 1]), as.vector(p1$predict), print)
+```
+
+
+```{r}
+helper <- data.frame(as.matrix(p1))
+helper$titles <- as.vector(f$title)
+helper$x <- as.vector(f2[,1])
+helper$y <- as.vector(f2[,2])
+pl <- ggplot(helper, aes(x = x, 
+                         y = y, 
+                         color = factor(predict))) +
+  geom_point(aes(text=titles),alpha = 0.5)
+
+ggplotly(pl)
+```
+
